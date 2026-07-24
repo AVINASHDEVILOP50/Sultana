@@ -31,7 +31,7 @@ import {
 import { startDashboardSession } from '../../../utils/dashboardSession.js';
 
 function buildButtonRow(guildConfig, guildId, disabled = false, panelStatus = null) {
-    const dmEnabled = guildConfig.dmOnClose !== false;
+    const dmEnabled = guildConfig?.dmOnClose !== false;
     const showRepost = panelStatus?.exists === false && panelStatus?.reason === 'panel_deleted';
 
     const buttons = [];
@@ -97,6 +97,14 @@ function buildPanelButtonRow(config) {
 }
 
 async function repostTicketPanel(client, guild, guildConfig, guildId) {
+    if (!guildConfig.ticketPanelChannelId) {
+        throw new TitanBotError(
+            'Panel channel missing',
+            ErrorTypes.CONFIGURATION,
+            'No panel channel is configured. Please set a panel channel first.',
+        );
+    }
+
     const channel = await guild.channels.fetch(guildConfig.ticketPanelChannelId).catch(() => null);
     if (!channel) {
         throw new TitanBotError(
@@ -123,7 +131,7 @@ function formatCloseDuration(ms) {
     return `${minutes}m`;
 }
 
-function buildDashboardEmbed(config, guild, panelStatus = null, ticketStats = null) {
+function buildDashboardEmbed(config = {}, guild, panelStatus = null, ticketStats = null) {
     const panelChannel = config.ticketPanelChannelId ? `<#${config.ticketPanelChannelId}>` : '`Not set`';
     const staffRole = config.ticketStaffRoleId ? `<@&${config.ticketStaffRoleId}>` : '`Not set`';
     const ticketLogsChannel = config.ticketLogsChannelId ? `<#${config.ticketLogsChannelId}>` : '`Not set`';
@@ -139,7 +147,7 @@ function buildDashboardEmbed(config, guild, panelStatus = null, ticketStats = nu
     const panelMsg = `\`${rawMsg.length > 60 ? rawMsg.substring(0, 60) + '…' : rawMsg}\``;
     const btnLabel = `\`${config.ticketButtonLabel || 'Create Ticket'}\``;
 
-    let panelStatusValue = formatPanelStatusField(panelStatus);
+    let panelStatusValue = config.ticketPanelChannelId ? formatPanelStatusField(panelStatus) : '⚠️ `Not Set (Run /ticket setup)`';
 
     const openTickets = ticketStats ? String(ticketStats.openCount) : '`—`';
     const avgCloseTime = ticketStats ? formatCloseDuration(ticketStats.avgCloseTimeMs) : '`—`';
@@ -218,10 +226,10 @@ function buildSelectMenu(guildId) {
 }
 
 async function refreshDashboard(rootInteraction, guildConfig, guildId, client) {
-    const panelStatus = client
+    const panelStatus = (client && guildConfig?.ticketPanelChannelId)
         ? await getTicketPanelStatus(client, rootInteraction.guild, guildConfig)
         : null;
-    const ticketStats = client ? await getGuildTicketStats(guildId) : null;
+    const ticketStats = client ? await getGuildTicketStats(guildId).catch(() => null) : null;
 
     if (panelStatus?.recoveredId) {
         await persistPanelMessageId(client, guildId, guildConfig, panelStatus.recoveredId);
@@ -260,22 +268,17 @@ export default {
     async execute(interaction, config, client) {
         try {
             const guildId = interaction.guild.id;
-            const guildConfig = await getGuildConfig(client, guildId);
+            const guildConfig = (await getGuildConfig(client, guildId)) || {};
 
-            if (!guildConfig.ticketPanelChannelId) {
-                throw new TitanBotError(
-                    'Ticket system not configured',
-                    ErrorTypes.CONFIGURATION,
-                    'The ticket system has not been set up yet. Run `/ticket setup` first to configure it.',
-                );
+            let panelStatus = null;
+            if (guildConfig.ticketPanelChannelId) {
+                panelStatus = await getTicketPanelStatus(client, interaction.guild, guildConfig).catch(() => null);
+                if (panelStatus?.recoveredId) {
+                    await persistPanelMessageId(client, guildId, guildConfig, panelStatus.recoveredId);
+                }
             }
 
-            const panelStatus = await getTicketPanelStatus(client, interaction.guild, guildConfig);
-            if (panelStatus.recoveredId) {
-                await persistPanelMessageId(client, guildId, guildConfig, panelStatus.recoveredId);
-            }
-
-            const ticketStats = await getGuildTicketStats(guildId);
+            const ticketStats = await getGuildTicketStats(guildId).catch(() => null);
 
             const selectRow = new ActionRowBuilder().addComponents(buildSelectMenu(guildId));
             const buttonRow = buildButtonRow(guildConfig, guildId, false, panelStatus);
@@ -389,7 +392,7 @@ async function handlePanelMessage(selectInteraction, rootInteraction, guildConfi
                 `The panel message has been updated.${
                     panelUpdated
                         ? '\nThe live ticket panel has also been refreshed.'
-                        : '\n> **Note:** The live panel could not be located. Use **Repost Panel** on the dashboard to restore it.'
+                        : '\n> **Note:** The live panel could not be located. Use **Repost Panel** on the dashboard or `/ticket setup` to post it.'
                 }`,
             ),
         ],
@@ -442,7 +445,7 @@ async function handleButtonLabel(selectInteraction, rootInteraction, guildConfig
                 `Button label changed to \`${newLabel}\`.${
                     panelUpdated
                         ? '\nThe live ticket panel button has also been updated.'
-                        : '\n> **Note:** The live panel could not be located. Use **Repost Panel** on the dashboard to restore it.'
+                        : '\n> **Note:** The live panel could not be located. Use **Repost Panel** on the dashboard or `/ticket setup` to post it.'
                 }`,
             ),
         ],
@@ -809,73 +812,16 @@ async function handleTranscriptChannel(selectInteraction, rootInteraction, guild
     });
 }
 
-async function handleCheckUser(selectInteraction, rootInteraction, guildConfig, guildId, client) {
-    await selectInteraction.deferUpdate();
-
-    const userSelect = new UserSelectMenuBuilder()
-        .setCustomId('ticket_cfg_check_user')
-        .setPlaceholder('Select a user to check...')
-        .setMaxValues(1);
-
-    const row = new ActionRowBuilder().addComponents(userSelect);
-
-    await selectInteraction.followUp({
-        embeds: [
-            new EmbedBuilder()
-                .setTitle('Check User Tickets')
-                .setDescription('Select a user to view their current open ticket count.')
-                .setColor(getColor('info')),
-        ],
-        components: [row],
-        flags: MessageFlags.Ephemeral,
-    });
-
-    const userCollector = rootInteraction.channel.createMessageComponentCollector({
-        componentType: ComponentType.UserSelect,
-        filter: i =>
-            i.user.id === selectInteraction.user.id && i.customId === 'ticket_cfg_check_user',
-        time: 60_000,
-        max: 1,
-    });
-
-    userCollector.on('collect', async userInteraction => {
-        await userInteraction.deferUpdate();
-        const targetUser = userInteraction.users.first();
-        const maxTickets = guildConfig.maxTicketsPerUser || 3;
-        const openCount = await getUserTicketCount(guildId, targetUser.id);
-        const atLimit = openCount >= maxTickets;
-
-        await userInteraction.followUp({
-            embeds: [
-                new EmbedBuilder()
-                    .setTitle(`Ticket Check — ${targetUser.username}`)
-                    .setDescription(
-                        `**Open Tickets:** ${openCount} / ${maxTickets}\n` +
-                            `**Remaining:** ${Math.max(0, maxTickets - openCount)}\n\n` +
-                            (atLimit
-                                ? '⚠️ This user has reached their ticket limit.'
-                                : '✅ This user can still open more tickets.'),
-                    )
-                    .setColor(atLimit ? getColor('error') : getColor('success'))
-                    .setThumbnail(targetUser.displayAvatarURL({ size: 64 }))
-                    .setTimestamp(),
-            ],
-            flags: MessageFlags.Ephemeral,
-        });
-    });
-
-    userCollector.on('end', (collected, reason) => {
-        if (reason === 'time' && collected.size === 0) {
-            replyUserError(selectInteraction, {
-                type: ErrorTypes.RATE_LIMIT,
-                message: 'No user was selected.',
-            }).catch(() => {});
-        }
-    });
-}
-
 async function handleRepostPanel(btnInteraction, rootInteraction, guildConfig, guildId, client) {
     await btnInteraction.deferUpdate();
+
+    if (!guildConfig.ticketPanelChannelId) {
+        await btnInteraction.followUp({
+            embeds: [infoEmbed('No Panel Channel', 'Please set up a ticket panel channel first using `/ticket setup`.')],
+            flags: MessageFlags.Ephemeral,
+        }).catch(() => {});
+        return;
+    }
 
     const panelStatus = await getTicketPanelStatus(client, rootInteraction.guild, guildConfig);
     if (panelStatus.exists) {
@@ -965,7 +911,6 @@ async function handleDeleteSystem(btnInteraction, rootInteraction, guildConfig, 
                     const panelMessage = await panelChannel.messages.fetch(guildConfig.ticketPanelMessageId).catch(() => null);
                     if (panelMessage) await panelMessage.delete().catch(() => {});
                 } else {
-                    
                     const messages = await panelChannel.messages.fetch({ limit: 50 }).catch(() => null);
                     if (messages) {
                         const found = messages.find(
