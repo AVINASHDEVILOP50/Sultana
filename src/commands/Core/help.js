@@ -101,7 +101,7 @@ export async function createInitialHelpMenu(client) {
             },
             {
                 name: '\u200B',
-                value: `-# ${botName} is [open source](https://youtu.be/1jCZX8s3bJE?si=NPOYx-vxVE1I5vJK)`,
+                value: `-# ${botName} is ready to go`,
                 inline: false,
             },
         ],
@@ -113,13 +113,13 @@ export async function createInitialHelpMenu(client) {
     embed.setTimestamp();
 
     const bugReportButton = new ButtonBuilder()
-        .setCustomId()
+        .setCustomId(BUG_REPORT_BUTTON_ID)
         .setLabel("Report Bug")
         .setStyle(ButtonStyle.Danger);
 
     const supportButton = new ButtonBuilder()
         .setLabel("Support Server")
-        .setURL("")
+        .setURL("https://discord.gg/s36CJpXSZw")
         .setStyle(ButtonStyle.Link);
 
     const selectRow = createSelectMenu(
