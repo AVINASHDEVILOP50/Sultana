@@ -1,5 +1,5 @@
 import { PermissionFlagsBits } from 'discord.js';
-import { db } from '../../../database/wrapper.js';
+import { db } from '../../database/wrapper.js';
 import { logger } from '../../utils/logger.js';
 import { TitanBotError, ErrorTypes } from '../../utils/errorHandler.js';
 
